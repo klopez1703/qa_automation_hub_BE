@@ -1,0 +1,185 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite" // Cambia a "sqlserver" o "postgresql" según el motor que uses
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// 1. GESTIÓN DE USUARIOS Y PERMISOS
+// ==========================================
+
+model ChapterMember {
+  id         Int     @id @default(autoincrement())
+  name       String  @unique
+  email      String?
+  qaHeadName String  @default("Joseph")
+  active     Boolean @default(true)
+  squads     Squad[]
+}
+
+model Squad {
+  id              Int            @id @default(autoincrement())
+  name            String         @unique
+  description     String?
+  active          Boolean        @default(true)
+  chapterMemberId Int?
+  chapterMember   ChapterMember? @relation(fields: [chapterMemberId], references: [id])
+  users           User[]
+}
+
+model User {
+  id                 Int                @id @default(autoincrement())
+  email              String             @unique
+  password           String
+  name               String
+  roleId             Int
+  role               Role               @relation(fields: [roleId], references: [id])
+  squadId            Int?
+  squad              Squad?             @relation(fields: [squadId], references: [id])
+  active             Boolean            @default(true)
+  mustChangePassword Boolean            @default(false)
+
+  ejecuciones        ExecutionHistory[]
+  projects           Project[]          @relation("UserProjects")
+  extraPermissions   UserPermission[]
+
+  // Tickets creados y tickets revisados por este usuario
+  ticketsCreated     AccessTicket[]     @relation("TicketRequester")
+  ticketsReviewed    AccessTicket[]     @relation("TicketReviewer")
+}
+
+model Role {
+  id          Int          @id @default(autoincrement())
+  name        String       @unique
+  description String?
+  users       User[]
+  permissions Permission[] @relation("RolePermissions")
+}
+
+model Permission {
+  id              Int              @id @default(autoincrement())
+  action          String           @unique // Ej: "PRUEBAS_EJECUTAR"
+  category        String           @default("GENERAL") // Ej: "MATRICES", "EJECUCION"
+  description     String?          // Ej: "Permite descargar matrices .xlsx generadas"
+  roles           Role[]           @relation("RolePermissions")
+  userPermissions UserPermission[]
+  tickets         AccessTicket[]
+}
+
+// Permisos individuales otorgados fuera del Rol base (ej. vía Ticket aprobado)
+model UserPermission {
+  id           Int        @id @default(autoincrement())
+  userId       Int
+  permissionId Int
+  grantedAt    DateTime   @default(now())
+  expiresAt    DateTime?  // Opcional: útil si das acceso temporal por un sprint
+
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permissionId])
+}
+
+// ==========================================
+// 3. GESTIÓN DE TICKETS DE ACCESO
+// ==========================================
+
+model AccessTicket {
+  id              Int         @id @default(autoincrement())
+  // "PERMISSION" | "PROJECT" | "BOTH"
+  requestType     String      @default("PERMISSION")
+  // "PENDING" | "APPROVED" | "REJECTED"
+  status          String      @default("PENDING")
+
+  requesterId     Int
+  requester       User        @relation("TicketRequester", fields: [requesterId], references: [id])
+
+  // Qué está solicitando (puede pedir un permiso, un proyecto, o ambos)
+  permissionId    Int?
+  permission      Permission? @relation(fields: [permissionId], references: [id])
+
+  projectId       Int?
+  project         Project?    @relation(fields: [projectId], references: [id])
+
+  justification   String      // Motivo o número de historia/requerimiento
+  expiresAt       DateTime?   // Fecha límite opcional solicitada
+
+  reviewerId      Int?
+  reviewer        User?       @relation("TicketReviewer", fields: [reviewerId], references: [id])
+  reviewerComment String?
+
+  createdAt       DateTime    @default(now())
+  reviewedAt      DateTime?
+}
+
+// ==========================================
+// 2. JERARQUÍA DE PRUEBAS (Proyectos -> Módulos -> SubMódulos -> Escenarios)
+// ==========================================
+
+// Proyectos (Ej: "Automatización DCL", "Portal Adquirente")
+model Project {
+  id          Int       @id @default(autoincrement())
+  name        String    @unique
+  description String?
+  modules     Module[]
+  users       User[]    @relation("UserProjects")
+  tickets     AccessTicket[]
+}
+
+// Módulos (Ej: "Retail", "Intra-Extra 0%", "Check In")
+model Module {
+  id          Int         @id @default(autoincrement())
+  name        String
+  projectId   Int
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  submodules  Submodule[]
+}
+
+// SubMódulos (Ej: "VENTA", "ANULACION", "DEVOLUCION")
+model Submodule {
+  id          Int        @id @default(autoincrement())
+  name        String
+  moduleId    Int
+  module      Module     @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  scenarios   Scenario[]
+}
+
+model ExecutionHistory {
+  id          Int          @id @default(autoincrement())
+  
+  // Relación con el escenario que se ejecutó
+  scenarioId  Int?
+  scenario    Scenario?        @relation(fields: [scenarioId], references: [id])
+  
+  // Relación con el usuario (QA o Admin) que disparó la prueba
+  userId      Int
+  user        User                @relation(fields: [userId], references: [id])
+  
+  // Datos de la ejecución
+  status      String?          
+  parameters  String?           
+  logOutput   String?           
+  evidenceUrl String?           
+  
+  steps       String?             
+  
+  // Tiempos de ejecución
+  startedAt   DateTime         @default(now())
+  completedAt DateTime?
+}
+
+// Escenarios (Ej: "Venta normal con caída de internet antes de aprobación")
+model Scenario {
+  id             Int           @id @default(autoincrement())
+  name           String
+  description    String?
+  specPathOrTag String?
+  tipoEjecucion String?        @default("INDIVIDUAL")      
+  submoduleId    Int
+  submodule      Submodule     @relation(fields: [submoduleId], references: [id], onDelete: Cascade)
+  
+  ejecuciones   ExecutionHistory[] 
+}
